@@ -1,0 +1,779 @@
+-- ==================================================
+-- HALLOWEEN AUTO TRICK-OR-TREAT — FULL SCRIPT (v24)
+-- Auto Spin + Auto Delete + Auto-Delete +1s + Delete-on-Full
+-- All ON by default. Everything wrapped in pcall so nothing
+-- can crash the client if the game state changes.
+-- ==================================================
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+-- ==================================================
+-- STEP 1: AUTO LOW DETAIL CLICKER (silent)
+-- ==================================================
+do
+    local Players = game:GetService("Players")
+    local GuiService = game:GetService("GuiService")
+    local VIM = game:GetService("VirtualInputManager")
+    local player = Players.LocalPlayer
+
+    local function getQualityFrame()
+        local ok, frame = pcall(function()
+            return player.PlayerGui.ClientScript.Modules.LoadingScreen.Screen.Quality
+        end)
+        if ok and frame then return frame end
+        local pg = player:FindFirstChild("PlayerGui")
+        if pg then
+            for _, obj in ipairs(pg:GetDescendants()) do
+                if obj.Name == "Quality" and obj:IsA("Frame") then return obj end
+            end
+        end
+    end
+
+    local function tap(key, hold)
+        VIM:SendKeyEvent(true, key, false, game)
+        task.wait(hold or 0.05)
+        VIM:SendKeyEvent(false, key, false, game)
+    end
+
+    local function clickAt(btn)
+        pcall(function()
+            local vu = game:GetService("VirtualUser")
+            local c = Vector2.new(
+                btn.AbsolutePosition.X + btn.AbsoluteSize.X / 2,
+                btn.AbsolutePosition.Y + btn.AbsoluteSize.Y / 2)
+            vu:Button1Down(c); task.wait(0.08); vu:Button1Up(c)
+        end)
+    end
+
+    task.wait(15)
+    local quality = nil
+    for _ = 1, 30 do
+        quality = getQualityFrame()
+        if quality then break end
+        task.wait(1)
+    end
+
+    if quality then
+        local high = quality:FindFirstChild("HighQuality")
+        local low  = quality:FindFirstChild("LowQuality")
+        if low then
+            task.wait(0.5)
+            if high then pcall(function() GuiService.SelectedObject = high end); task.wait(0.3) end
+            tap(Enum.KeyCode.Right); task.wait(0.25)
+            tap(Enum.KeyCode.Right); task.wait(0.3)
+            tap(Enum.KeyCode.Return, 0.08); task.wait(0.2)
+            tap(Enum.KeyCode.KeypadEnter, 0.08); task.wait(0.2)
+            clickAt(low); task.wait(0.1)
+            pcall(function() low.MouseButton1Click:Fire() end)
+            pcall(function() low.Activated:Fire() end)
+            task.wait(0.5)
+            tap(Enum.KeyCode.BackSlash)
+        end
+    end
+end
+
+-- ==================================================
+-- STEP 2: HALLOWEEN SCRIPT
+-- ==================================================
+local ok, err = pcall(function()
+
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local VIM = game:GetService("VirtualInputManager")
+    local RunService = game:GetService("RunService")
+
+    local player = Players.LocalPlayer
+    local Event = ReplicatedStorage:WaitForChild("NetworkRemoteEvent", 30)
+    if not Event then return end
+
+    -- ==================================================
+    -- CONFIG
+    -- ==================================================
+    local Config = {
+        CandycornDataIndex   = 171,
+        PotionDataIndex      = 64,
+        HouseReadyText       = "Trick or Treat!",
+        HouseConfirmWindow   = 2,
+        HouseRetryWindow     = 1,
+        EggName              = "Radioactive Egg",
+        EggVerticalOffset    = 6,
+        EggPlatformSize      = Vector3.new(20, 1, 20),
+        EggPlatformYOffset   = -3,
+        EggCheckInterval     = 6,
+        EggStallLimit        = 10,
+        HouseScanCacheTTL    = 0.75,
+        ActivationFallHeight = 10,
+        AntiAfkInterval      = 60,
+        LoopDelay            = 0.5,
+        SpinInterval         = 5,
+        PotionMaxSlots       = 40,
+        AutoDeleteTypes      = {
+            Level1   = true,
+            Enchant1 = true,
+            Shadow   = true,
+        },
+        DeletePriority = {
+            "EnchantMax",
+            "LevelMax",
+            "ShadowMax",
+            "LevelEnchantMax",
+        },
+    }
+
+    -- ==================================================
+    -- GLOBAL STATE
+    -- ==================================================
+    _G.HalloweenEnabled           = true
+    _G.HalloweenEggsEnabled       = true
+    _G.HalloweenRenderEnabled     = false
+    _G.HalloweenAutoSpinEnabled   = true
+    _G.HalloweenAutoDeleteEnabled = true
+
+    local CandycornBalance      = nil
+    local SessionTrickOrTreats  = 0
+    local SessionEggsHatched    = 0
+    local SessionPotionsDeleted = 0
+    local SessionSpins          = 0
+    local CurrentHouseId        = nil
+    local LastCheckboxClick     = 0
+    local EggPlatform           = nil
+    local EggHatchGeneration    = 0
+    local SpinGeneration        = 0
+    local HouseScanCache = { result = {}, total = 0, timestamp = 0 }
+
+    local PotionCache = {}
+    local PotionCount = 0
+
+    -- ==================================================
+    -- 3D RENDERING
+    -- ==================================================
+    local function applyRenderingState()
+        pcall(function()
+            RunService:Set3dRenderingEnabled(_G.HalloweenRenderEnabled)
+        end)
+    end
+
+    applyRenderingState()
+
+    pcall(function()
+        local Lighting = game:GetService("Lighting")
+        for _, effect in ipairs(Lighting:GetChildren()) do
+            if effect:IsA("PostEffect") then effect.Enabled = false end
+        end
+    end)
+
+    -- ==================================================
+    -- ANTI-AFK
+    -- ==================================================
+    task.spawn(function()
+        while true do
+            task.wait(Config.AntiAfkInterval)
+            pcall(function()
+                VIM:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game)
+                task.wait(0.1)
+                VIM:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game)
+            end)
+        end
+    end)
+
+    -- ==================================================
+    -- UI
+    -- ==================================================
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "HalloweenToggle"
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = player:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 300, 0, 104)
+    frame.Position = UDim2.new(0, 20, 0, 20)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    frame.BorderSizePixel = 0
+    frame.Active = true
+    frame.Draggable = true
+    frame.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = frame
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 24)
+    title.Position = UDim2.new(0, 0, 0, 4)
+    title.BackgroundTransparency = 1
+    title.Text = "Halloween"
+    title.TextColor3 = Color3.fromRGB(255, 200, 100)
+    title.TextScaled = true
+    title.Font = Enum.Font.GothamBold
+    title.Parent = frame
+
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(0, 130, 0, 26)
+    toggleBtn.Position = UDim2.new(0, 15, 0, 30)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(230, 130, 50)
+    toggleBtn.BorderSizePixel = 0
+    toggleBtn.Text = "ON"
+    toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleBtn.TextScaled = true
+    toggleBtn.Font = Enum.Font.GothamBold
+    toggleBtn.Active = true
+    toggleBtn.Parent = frame
+
+    local function makeCheckbox(x, y, labelText, defaultValue)
+        local cb = Instance.new("TextButton")
+        cb.Size = UDim2.new(0, 20, 0, 20)
+        cb.Position = UDim2.new(0, x, 0, y)
+        cb.BackgroundColor3 = defaultValue and Color3.fromRGB(50, 130, 70) or Color3.fromRGB(50, 50, 50)
+        cb.BorderSizePixel = 0
+        cb.Text = ""
+        cb.AutoButtonColor = false
+        cb.Active = true
+        cb.Parent = frame
+        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 3); c.Parent = cb
+        local chk = Instance.new("TextLabel")
+        chk.Size = UDim2.new(1, 0, 1, 0); chk.BackgroundTransparency = 1
+        chk.Text = defaultValue and "✓" or ""
+        chk.TextColor3 = Color3.fromRGB(100, 220, 120)
+        chk.TextScaled = true; chk.Font = Enum.Font.GothamBold
+        chk.Active = false; chk.Parent = cb
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(0, 65, 0, 12); lbl.Position = UDim2.new(0, x + 23, 0, y + 4)
+        lbl.BackgroundTransparency = 1; lbl.Text = labelText
+        lbl.TextColor3 = Color3.fromRGB(180, 180, 180)
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Font = Enum.Font.Gotham; lbl.TextSize = 9
+        lbl.Active = false; lbl.Parent = frame
+        return cb, chk
+    end
+
+    local eggCheckbox, eggCheck       = makeCheckbox(155, 32, "Eggs", true)
+    local renderCheckbox, renderCheck = makeCheckbox(240, 32, "3D", false)
+    local spinCheckbox, spinCheck     = makeCheckbox(15, 58, "Auto Spin", true)
+    local deleteCheckbox, deleteCheck = makeCheckbox(130, 58, "Auto-Delete +1s", true)
+
+    local modeLabel = Instance.new("TextLabel")
+    modeLabel.Size = UDim2.new(1, -30, 0, 14)
+    modeLabel.Position = UDim2.new(0, 15, 0, 84)
+    modeLabel.BackgroundTransparency = 1
+    modeLabel.TextColor3 = Color3.fromRGB(140, 200, 220)
+    modeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    modeLabel.Font = Enum.Font.Gotham
+    modeLabel.TextSize = 9
+    modeLabel.Text = ""
+    modeLabel.Parent = frame
+
+    local function updateCheckboxVisuals()
+        eggCheckbox.BackgroundColor3 = _G.HalloweenEggsEnabled and Color3.fromRGB(50, 130, 70) or Color3.fromRGB(50, 50, 50)
+        eggCheck.Text = _G.HalloweenEggsEnabled and "✓" or ""
+        renderCheckbox.BackgroundColor3 = _G.HalloweenRenderEnabled and Color3.fromRGB(50, 130, 70) or Color3.fromRGB(50, 50, 50)
+        renderCheck.Text = _G.HalloweenRenderEnabled and "✓" or ""
+        spinCheckbox.BackgroundColor3 = _G.HalloweenAutoSpinEnabled and Color3.fromRGB(50, 130, 70) or Color3.fromRGB(50, 50, 50)
+        spinCheck.Text = _G.HalloweenAutoSpinEnabled and "✓" or ""
+        deleteCheckbox.BackgroundColor3 = _G.HalloweenAutoDeleteEnabled and Color3.fromRGB(50, 130, 70) or Color3.fromRGB(50, 50, 50)
+        deleteCheck.Text = _G.HalloweenAutoDeleteEnabled and "✓" or ""
+
+        local eggState = _G.HalloweenEggsEnabled and ("Hatching " .. Config.EggName) or "Idle"
+        local renderState = _G.HalloweenRenderEnabled and "3D: ON" or "3D: OFF"
+        local spinState = _G.HalloweenAutoSpinEnabled and "Spins ON" or "Spins OFF"
+        modeLabel.Text = string.format("%s | %s | %s | Potions: %d/%d",
+            eggState, renderState, spinState, PotionCount, Config.PotionMaxSlots)
+    end
+
+    -- ==================================================
+    -- POTION MANAGEMENT
+    -- ==================================================
+    local function countByType(t)
+        local n = 0
+        for _, v in pairs(PotionCache) do
+            if v == t then n += 1 end
+        end
+        return n
+    end
+
+    local function findUuidByType(t)
+        for uuid, v in pairs(PotionCache) do
+            if v == t then return uuid end
+        end
+        return nil
+    end
+
+    local function deletePotionByUuid(uuid)
+        if not uuid then return false end
+        local ok = pcall(function()
+            Event:FireServer("DeletePotion", uuid)
+        end)
+        if ok then
+            SessionPotionsDeleted += 1
+            return true
+        end
+        return false
+    end
+
+    local function deleteForSpace()
+        if PotionCount < Config.PotionMaxSlots then return true end
+        local counts = {}
+        for _, t in ipairs(Config.DeletePriority) do
+            counts[t] = countByType(t)
+        end
+        local bestType, bestCount = nil, 0
+        for _, t in ipairs(Config.DeletePriority) do
+            if counts[t] > bestCount then
+                bestCount = counts[t]
+                bestType = t
+            end
+        end
+        if not bestType or bestCount <= 0 then return false end
+        return deletePotionByUuid(findUuidByType(bestType))
+    end
+
+    local function sweepAutoDeleteTypes()
+        if not _G.HalloweenAutoDeleteEnabled then return end
+        local toDelete = {}
+        for uuid, t in pairs(PotionCache) do
+            if Config.AutoDeleteTypes[t] then
+                table.insert(toDelete, uuid)
+            end
+        end
+        for _, uuid in ipairs(toDelete) do
+            deletePotionByUuid(uuid)
+        end
+    end
+
+    -- ==================================================
+    -- DATA HOOKS
+    -- ==================================================
+    Event.OnClientEvent:Connect(function(eventName, value, index)
+        if eventName ~= "DataChanged" then return end
+
+        if index == Config.PotionDataIndex and type(value) == "table" then
+            pcall(function()
+                local newCache = {}
+                local count = 0
+                for _, entry in ipairs(value) do
+                    if type(entry) == "table"
+                        and type(entry[1]) == "string"
+                        and type(entry[2]) == "string" then
+                        newCache[entry[1]] = entry[2]
+                        count += 1
+                    end
+                end
+                PotionCache = newCache
+                PotionCount = count
+                updateCheckboxVisuals()
+                sweepAutoDeleteTypes()
+                if PotionCount >= Config.PotionMaxSlots then
+                    deleteForSpace()
+                end
+            end)
+        end
+
+        if index == Config.CandycornDataIndex and type(value) == "number" then
+            CandycornBalance = value
+        end
+    end)
+
+    -- ==================================================
+    -- SPIN LOOP
+    -- ==================================================
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            if not _G.HalloweenAutoSpinEnabled or not _G.HalloweenEnabled then
+                continue
+            end
+            if PotionCount >= Config.PotionMaxSlots then
+                pcall(deleteForSpace)
+                task.wait(0.5)
+            end
+            pcall(function() Event:FireServer("HalloweenSpinToWin") end)
+            task.wait(0.2)
+            pcall(function() Event:FireServer("SpinToWin") end)
+            SessionSpins += 1
+            task.wait(Config.SpinInterval - 0.7)
+        end
+    end)
+
+    -- ==================================================
+    -- CHECKBOX HANDLERS
+    -- ==================================================
+    local function toggleEggCheckbox()
+        if tick() - LastCheckboxClick < 0.05 then return end
+        LastCheckboxClick = tick()
+        _G.HalloweenEggsEnabled = not _G.HalloweenEggsEnabled
+        EggHatchGeneration += 1
+        updateCheckboxVisuals()
+    end
+
+    local function toggleRenderCheckbox()
+        if tick() - LastCheckboxClick < 0.05 then return end
+        LastCheckboxClick = tick()
+        _G.HalloweenRenderEnabled = not _G.HalloweenRenderEnabled
+        applyRenderingState()
+        updateCheckboxVisuals()
+    end
+
+    local function toggleSpinCheckbox()
+        if tick() - LastCheckboxClick < 0.05 then return end
+        LastCheckboxClick = tick()
+        _G.HalloweenAutoSpinEnabled = not _G.HalloweenAutoSpinEnabled
+        SpinGeneration += 1
+        updateCheckboxVisuals()
+    end
+
+    local function toggleDeleteCheckbox()
+        if tick() - LastCheckboxClick < 0.05 then return end
+        LastCheckboxClick = tick()
+        _G.HalloweenAutoDeleteEnabled = not _G.HalloweenAutoDeleteEnabled
+        updateCheckboxVisuals()
+    end
+
+    eggCheckbox.MouseButton1Click:Connect(toggleEggCheckbox)
+    renderCheckbox.MouseButton1Click:Connect(toggleRenderCheckbox)
+    spinCheckbox.MouseButton1Click:Connect(toggleSpinCheckbox)
+    deleteCheckbox.MouseButton1Click:Connect(toggleDeleteCheckbox)
+
+    updateCheckboxVisuals()
+
+    local function setToggle(on)
+        _G.HalloweenEnabled = on
+        if on then
+            EggHatchGeneration += 1
+            SpinGeneration += 1
+            toggleBtn.Text = "ON"
+            toggleBtn.BackgroundColor3 = Color3.fromRGB(230, 130, 50)
+        else
+            toggleBtn.Text = "OFF"
+            toggleBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+        end
+    end
+
+    toggleBtn.MouseButton1Click:Connect(function()
+        setToggle(not _G.HalloweenEnabled)
+    end)
+
+    -- ==================================================
+    -- WORKSPACE PART DELETION
+    -- ==================================================
+    local DELETION_RULES = {
+        { parent = "Houses",      names = { "Decoration", "SignPost" }, recursive = false },
+        { parent = "Halloween26", names = { "Pump" },                  recursive = false },
+        { parent = "Halloween26", names = { "Pumpkins" },              recursive = true  },
+    }
+
+    local function deleteObstructions()
+        for _, rule in ipairs(DELETION_RULES) do
+            local parent = workspace:FindFirstChild(rule.parent)
+            if not parent then continue end
+            if rule.recursive then
+                local toRemove = {}
+                for _, obj in ipairs(parent:GetDescendants()) do
+                    for _, name in ipairs(rule.names) do
+                        if obj.Name == name then
+                            table.insert(toRemove, obj); break
+                        end
+                    end
+                end
+                for _, obj in ipairs(toRemove) do
+                    if obj and obj.Parent then pcall(function() obj:Destroy() end) end
+                end
+            else
+                for _, child in ipairs(parent:GetChildren()) do
+                    for _, name in ipairs(rule.names) do
+                        local obj = child:FindFirstChild(name)
+                        if obj then pcall(function() obj:Destroy() end) end
+                    end
+                end
+            end
+        end
+    end
+
+    pcall(deleteObstructions)
+
+    -- ==================================================
+    -- UTILITIES
+    -- ==================================================
+    local Utils = {}
+
+    function Utils.getHRP(timeout)
+        local char = player.Character or player.CharacterAdded:Wait()
+        return char:WaitForChild("HumanoidRootPart", timeout or 10)
+    end
+
+    function Utils.positionOf(inst)
+        if not inst then return nil end
+        if inst:IsA("BasePart") then return inst.Position end
+        if inst:IsA("Model") then
+            if inst.PrimaryPart then return inst.PrimaryPart.Position end
+            local ok, pivot = pcall(function() return inst:GetPivot().Position end)
+            if ok then return pivot end
+        end
+        return nil
+    end
+
+    function Utils.teleportTo(target, heightOffset)
+        local hrp = Utils.getHRP()
+        if not hrp or not target then return false end
+        heightOffset = heightOffset or 6
+        local pos
+        if typeof(target) == "Vector3" then pos = target
+        else pos = Utils.positionOf(target) end
+        if not pos then return false end
+        pcall(function()
+            hrp.CFrame = CFrame.new(pos + Vector3.new(0, heightOffset, 0))
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+        return true
+    end
+
+    function Utils.touchActivation(activation, heightOffset)
+        if not activation then return false end
+        local hrp = Utils.getHRP()
+        if not hrp then return false end
+        heightOffset = heightOffset or Config.ActivationFallHeight
+        local target = activation
+        if activation:IsA("Folder") then
+            local primary = activation:FindFirstChild("Root") or activation:FindFirstChild("Chest")
+            if primary and primary:IsA("BasePart") then
+                target = primary
+            else
+                for _, d in ipairs(activation:GetDescendants()) do
+                    if d:IsA("BasePart") then target = d; break end
+                end
+            end
+        end
+        local pos = Utils.positionOf(target)
+        if pos then
+            pcall(function()
+                hrp.CFrame = CFrame.new(pos + Vector3.new(0, heightOffset, 0))
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+        task.wait(0.1)
+        if activation:IsA("BasePart") then
+            pcall(function() activation.Touched:Fire(hrp) end)
+        else
+            for _, part in ipairs(activation:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    pcall(function() part.Touched:Fire(hrp) end)
+                end
+            end
+        end
+        task.wait(0.05)
+        return true
+    end
+
+    -- ==================================================
+    -- HOUSE SCANNING
+    -- ==================================================
+    local function isHouseReady(house)
+        if not house then return false end
+        local activation = house:FindFirstChild("Activation")
+        if not activation then return false end
+        local tag = activation:FindFirstChild("Tag")
+        if not tag then return false end
+        local billboard = tag:FindFirstChild("BillboardGui")
+        if not billboard then return false end
+        local label = billboard:FindFirstChild("Tag")
+        if not label or not label:IsA("TextLabel") then return false end
+        return label.Text == Config.HouseReadyText
+    end
+
+    local function scanHousesRaw()
+        local houses = workspace:FindFirstChild("Houses")
+        if not houses then return {}, 0 end
+        local hrp = Utils.getHRP()
+        local myPos = hrp and hrp.Position or Vector3.zero
+        local ready = {}
+        local total = 0
+        for _, house in ipairs(houses:GetChildren()) do
+            total += 1
+            local activation = house:FindFirstChild("Activation")
+            local root = activation and activation:FindFirstChild("Root")
+            if root and root:IsA("BasePart") and isHouseReady(house) then
+                local houseId = house:GetAttribute("HouseId") or house.Name
+                table.insert(ready, {
+                    house = house,
+                    activation = activation,
+                    root = root,
+                    houseId = houseId,
+                    distance = (root.Position - myPos).Magnitude,
+                })
+            end
+        end
+        table.sort(ready, function(a, b) return a.distance < b.distance end)
+        return ready, total
+    end
+
+    local function scanHouses()
+        if tick() - HouseScanCache.timestamp < Config.HouseScanCacheTTL then
+            return HouseScanCache.result, HouseScanCache.total
+        end
+        local ready, total = scanHousesRaw()
+        HouseScanCache.result = ready
+        HouseScanCache.total = total
+        HouseScanCache.timestamp = tick()
+        return ready, total
+    end
+
+    local function attemptHouse(houseInfo)
+        local candyBefore = CandycornBalance or 0
+        Utils.touchActivation(houseInfo.activation)
+        local deadline = tick() + Config.HouseConfirmWindow
+        while tick() < deadline do
+            if not _G.HalloweenEnabled then return false end
+            if (CandycornBalance or 0) > candyBefore then
+                SessionTrickOrTreats += 1
+                HouseScanCache.timestamp = 0
+                return true
+            end
+            task.wait(0.05)
+        end
+        Utils.touchActivation(houseInfo.activation)
+        local deadline2 = tick() + Config.HouseRetryWindow
+        while tick() < deadline2 do
+            if not _G.HalloweenEnabled then return false end
+            if (CandycornBalance or 0) > candyBefore then
+                SessionTrickOrTreats += 1
+                HouseScanCache.timestamp = 0
+                return true
+            end
+            task.wait(0.05)
+        end
+        return false
+    end
+
+    -- ==================================================
+    -- EGG HATCHING
+    -- ==================================================
+    local function ensureEggPlatform()
+        if EggPlatform and EggPlatform.Parent then return EggPlatform end
+        local eggs = workspace:FindFirstChild("Eggs")
+        if not eggs then return nil end
+        local egg = eggs:FindFirstChild(Config.EggName)
+        if not egg then return nil end
+        local eggPos = Utils.positionOf(egg)
+        if not eggPos then return nil end
+        local platform = Instance.new("Part")
+        platform.Name = "_AutoHatchPlatform"
+        platform.Size = Config.EggPlatformSize
+        platform.Position = Vector3.new(eggPos.X, eggPos.Y + Config.EggPlatformYOffset, eggPos.Z)
+        platform.Anchored = true
+        platform.CanCollide = true
+        platform.Transparency = 0
+        platform.Color = Color3.fromRGB(150, 150, 150)
+        platform.Material = Enum.Material.Slate
+        platform.TopSurface = Enum.SurfaceType.Smooth
+        platform.BottomSurface = Enum.SurfaceType.Smooth
+        platform.Parent = workspace
+        EggPlatform = platform
+        return platform
+    end
+
+    local function getEggsOpened()
+        local ls = player:FindFirstChild("leaderstats")
+        local v = ls and ls:FindFirstChild("Eggs Opened")
+        return v and v.Value or 0
+    end
+
+    local function releaseT()
+        pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.T, false, game) end)
+    end
+
+    local function pressT()
+        pcall(function()
+            VIM:SendKeyEvent(true, Enum.KeyCode.T, false, game)
+            task.wait(0.05)
+            VIM:SendKeyEvent(false, Enum.KeyCode.T, false, game)
+        end)
+    end
+
+    local function eggHatchHandler()
+        local myGen = EggHatchGeneration
+        local eggs = workspace:FindFirstChild("Eggs")
+        if not eggs then task.wait(1); return false end
+        local egg = eggs:FindFirstChild(Config.EggName)
+        if not egg then task.wait(1); return false end
+        local eggPos = Utils.positionOf(egg)
+        if not eggPos then task.wait(1); return false end
+        local platform = ensureEggPlatform()
+        if not platform then task.wait(1); return false end
+        local spawnPos = Vector3.new(
+            eggPos.X,
+            platform.Position.Y + platform.Size.Y / 2 + Config.EggVerticalOffset,
+            eggPos.Z)
+        Utils.teleportTo(spawnPos, 0)
+        task.wait(0.4)
+        pressT()
+        local lastCount = getEggsOpened()
+        local lastCheck = tick()
+        local stalls = 0
+        while _G.HalloweenEnabled and _G.HalloweenEggsEnabled do
+            if EggHatchGeneration ~= myGen then
+                releaseT(); return false
+            end
+            if #(scanHouses()) > 0 then
+                releaseT(); return true
+            end
+            if tick() - lastCheck >= Config.EggCheckInterval then
+                lastCheck = tick()
+                local now = getEggsOpened()
+                if now > lastCount then
+                    SessionEggsHatched += (now - lastCount)
+                    stalls = 0
+                    lastCount = now
+                else
+                    stalls += 1
+                    Utils.teleportTo(spawnPos, 0)
+                    task.wait(0.3)
+                    releaseT(); task.wait(0.1); pressT()
+                    if stalls >= Config.EggStallLimit then
+                        releaseT(); return false
+                    end
+                end
+            end
+            task.wait(0.5)
+        end
+        releaseT()
+        return false
+    end
+
+    -- ==================================================
+    -- MAIN LOOP
+    -- ==================================================
+    task.spawn(function()
+        while true do
+            while not _G.HalloweenEnabled do
+                task.wait(0.5)
+            end
+            local loopOk = pcall(function()
+                while _G.HalloweenEnabled do
+                    local ready = scanHouses()
+                    if #ready > 0 then
+                        CurrentHouseId = ready[1].houseId
+                        if not attemptHouse(ready[1]) then task.wait(0.5) end
+                    else
+                        CurrentHouseId = nil
+                        if _G.HalloweenEggsEnabled then
+                            eggHatchHandler()
+                        else
+                            task.wait(1)
+                        end
+                    end
+                    task.wait(Config.LoopDelay)
+                end
+            end)
+            if not loopOk then task.wait(5) end
+            CurrentHouseId = nil
+        end
+    end)
+
+end)
+
+if not ok then
+    -- Swallow silently — we don't want any console spam
+end
